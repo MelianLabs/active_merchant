@@ -15,12 +15,12 @@ module ActiveMerchant #:nodoc:
       AUTH_FINAL   = 'FINAL'.freeze
       AUTH_PREAUTH = 'PREAUTH'.freeze
       CARD_CODES   = {
-        'visa':             'V',
-        'master':           'M',
-        'american_express': 'X',
-        'discover':         'R',
-        'jcb':              'J',
-        'diners_club':      'I'
+        'visa' =>             'V',
+        'master' =>           'M',
+        'american_express' => 'X',
+        'discover' =>         'R',
+        'jcb' =>              'J',
+        'diners_club' =>      'I'
       }.freeze
 
       # This is not all the error codes provided by TSYS. More time can be spent to map more completely. For now
@@ -74,27 +74,30 @@ module ActiveMerchant #:nodoc:
         'E6004' => STANDARD_ERROR_CODE[:incorrect_address],
         'E6999' => STANDARD_ERROR_CODE[:card_declined],
         'D9000' => STANDARD_ERROR_CODE[:card_declined],
-        'D9000' => STANDARD_ERROR_CODE[:card_declined],
         'D9001' => STANDARD_ERROR_CODE[:card_declined],
         'D9002' => STANDARD_ERROR_CODE[:card_declined],
         'D9003' => STANDARD_ERROR_CODE[:card_declined],
         'F9901' => STANDARD_ERROR_CODE[:config_error]
         # 'E0713' - TRANSACTION KEY EXPIRED
       }
-      STATUS_PASS  = 'PASS'.freeze
+      STATUS_PASS                 = 'PASS'.freeze
 
       # TransIT processes the transaction as card not present if the field value is PHONE, MAIL, or INTERNET.
       # For any other, TransIT processes the transaction as card present.
       CARD_DATA_SOURCES = %w[BAR_CODE EMV EMV_CONTACTLESS FALLBACK_SWIPE INTERNET MAIL MANUAL NFC PHONE SWIPE].freeze
 
       def initialize(options = {})
-        requires!(options, :device_id, :transaction_key, :developer_id)
+        requires!(options, :developer_id, :device_id)
 
         @device_id       = options[:device_id]
-        @transaction_key = options[:transaction_key]
+        @transaction_key = options[:transaction_key] || nil
         @developer_id    = options[:developer_id]
 
         super
+      end
+
+      def generate_key(mid, user_id, password, options = {})
+        generate_key_request(mid, user_id, password, options)
       end
 
       def purchase(money, payment_method, options = {})
@@ -135,14 +138,14 @@ module ActiveMerchant #:nodoc:
       def add_address(post, options)
         if address = options[:billing_address] || options[:address]
           post[:addressLine1] = address[:address1] if address[:address1]
-          post[:zip] = address[:zip] if address[:zip]
+          post[:zip]          = address[:zip] if address[:zip]
         end
       end
 
       def add_amount(post, money, options, include_currency: false)
-        currency = options[:currency] || currency(money)
+        currency                 = options[:currency] || currency(money)
         post[:transactionAmount] = localized_amount(money, currency)
-        post[:currencyCode] = currency if include_currency
+        post[:currencyCode]      = currency if include_currency
       end
 
       def add_creditcard(post, creditcard, options)
@@ -191,17 +194,21 @@ module ActiveMerchant #:nodoc:
                   :terminal_capability,
                   :terminal_operating_environment,
                   :cardholder_authentication_method,
-                  # :terminal_authentication_capability,
-                  # :terminal_output_capability,
-                  # :max_pin_length
-                 )
+        # :terminal_authentication_capability,
+        # :terminal_output_capability,
+        # :max_pin_length
+        )
 
-        post[:terminalCapability]               = options[:terminal_capability]
-        post[:terminalOperatingEnvironment]     = options[:terminal_operating_environment]
-        post[:cardholderAuthenticationMethod]   = options[:cardholder_authentication_method]
+        post[:terminalCapability]             = options[:terminal_capability]
+        post[:terminalOperatingEnvironment]   = options[:terminal_operating_environment]
+        post[:cardholderAuthenticationMethod] = options[:cardholder_authentication_method]
         # post[:terminalAuthenticationCapability] = options[:terminal_authentication_capability]
         # post[:terminalOutputCapability]         = options[:terminal_output_capability]
         # post[:maxPinLength]                     = options[:max_pin_length]
+      end
+
+      def generate_key_request(mid, user_id, password, options = {})
+        commit(:post, build_generate_key_request(mid, user_id, password, options))
       end
 
       def authorize_request(money, payment_method, options)
@@ -224,22 +231,36 @@ module ActiveMerchant #:nodoc:
       def refund_request(_money, _authorization, _options)
       end
 
+      def build_generate_key_request(mid, user_id, password, options)
+        message = { GenerateKey: {} }
+        post    = message[:GenerateKey]
+
+        # post[:deviceID]       = @device_id
+        post[:mid]            = mid
+        post[:userID]         = user_id
+        post[:password]       = password
+        post[:developerID]    = @developer_id
+        post[:transactionKey] = @transaction_key if @transaction_key.present?
+
+        message
+      end
+
       # IMPORTANT: although JSON encoded, the order of fields are important, so don't move things around!
       def build_auth_or_purchase_request(money, payment_method, options, auth = true)
         requires!(options, :card_data_source)
 
-        message = auth ? {  Auth: {}  } : { Sale: {} }
-        post = message[auth ? :Auth : :Sale]
+        message = auth ? { Auth: {} } : { Sale: {} }
+        post    = message[auth ? :Auth : :Sale]
 
         add_key_information(post, options)
 
-        post[:cardDataSource]         = options[:card_data_source]
+        post[:cardDataSource] = options[:card_data_source]
 
         add_amount(post, money, options, include_currency: true)
         add_creditcard(post, payment_method, options)
 
-        post[:orderNumber]            = options[:order_id]
-        post[:softDescriptor]         = options[:statement_descriptor] if options[:statement_descriptor]
+        post[:orderNumber]    = options[:order_id]
+        post[:softDescriptor] = options[:statement_descriptor] if options[:statement_descriptor]
 
         add_terminal_information(post, options)
 
@@ -275,7 +296,7 @@ module ActiveMerchant #:nodoc:
         payment.respond_to?(:emv?) && payment.emv?
       end
 
-      def check_and_strip_tag(parameters, response)
+      def check_and_strip_tag(response, parameters)
         req_key = parameters.first[0]
         rsp_key = response.first[0]
         raise StandardError, "Protocol mismatch. #{req_key.to_s + 'Response'} expected, got #{rsp_key}" if req_key.to_s + 'Response' != rsp_key
@@ -286,11 +307,11 @@ module ActiveMerchant #:nodoc:
         raw_response = response = nil
         begin
           raw_response = ssl_request(method, url, post_data(parameters), headers(options))
-          response = parse(raw_response)
-          response = check_and_strip_tag(response, parameters)
+          response     = parse(raw_response)
+          response     = check_and_strip_tag(response, parameters)
         rescue ResponseError => e
           raw_response = e.response.body
-          response = response_error(raw_response)
+          response     = response_error(raw_response)
         rescue JSON::ParserError
           response = json_error(raw_response)
         end
@@ -310,7 +331,7 @@ module ActiveMerchant #:nodoc:
                      avs_result:        { code: response['addressVerificationCode'] ? response['addressVerificationCode'] : 'U' },
                      cvv_result:        response['cvvVerificationCode'] ? response['cvvVerificationCode'] : 'M',
                      emv_authorization: 'TBD', #TODO: later
-                     error_code:        success ? nil : error_code_from(response)
+                     error_code: success ? nil : error_code_from(response)
         )
       end
 
