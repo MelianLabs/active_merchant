@@ -96,30 +96,34 @@ module ActiveMerchant #:nodoc:
         super
       end
 
-      def generate_key(mid, user_id, password, options = {})
-        generate_key_request(mid, user_id, password, options)
+      def authorize(money, payment_method, options = {})
+        requires!(options, [:card_data_source, *CARD_DATA_SOURCES])
+        commit(:post, build_auth_or_purchase_request(money, payment_method, options), options)
+      end
+
+      def capture(money, authorization, options = {})
+        commit(:post, build_capture_request(money, authorization, options), options)
+      end
+
+      def generate_key(merchant_id, user_id, password, options = {})
+        commit(:post, build_generate_key_request(merchant_id, user_id, password, options))
       end
 
       def purchase(money, payment_method, options = {})
         requires!(options, [:card_data_source, *CARD_DATA_SOURCES])
-        purchase_request(money, payment_method, options)
+        commit(:post, build_auth_or_purchase_request(money, payment_method, options, false), options)
       end
 
-      def authorize(money, payment_method, options = {})
-        requires!(options, [:card_data_source, *CARD_DATA_SOURCES])
-        authorize_request(money, payment_method, options)
+      def refund(money, authorization, options = {})
+        commit(:post, build_void_request(money, authorization, options), options)
       end
 
-      def capture(_money, _authorization, _options = {})
+      def verify(payment, options={})
+        commit(:post, build_verify_request(payment, options), options)
       end
 
       def void(_authorization, _options = {})
-      end
-
-      def refund(_money, _authorization, _options = {})
-      end
-
-      def verify(_credit_card, _options={})
+        commit(:post, build_void_request(nil, authorization, options), options)
       end
 
       def supports_scrubbing
@@ -207,36 +211,11 @@ module ActiveMerchant #:nodoc:
         # post[:maxPinLength]                     = options[:max_pin_length]
       end
 
-      def generate_key_request(mid, user_id, password, options = {})
-        commit(:post, build_generate_key_request(mid, user_id, password, options))
-      end
-
-      def authorize_request(money, payment_method, options)
-        commit(:post, build_auth_or_purchase_request(money, payment_method, options), options)
-      end
-
-      def capture_request(_money, _authorization, _options)
-      end
-
-      def cancel_request(_authorization, _options)
-      end
-
-      def inquire_request(_authorization, _options, *_success_criteria)
-      end
-
-      def purchase_request(money, payment_method, options)
-        commit(:post, build_auth_or_purchase_request(money, payment_method, options, false), options)
-      end
-
-      def refund_request(_money, _authorization, _options)
-      end
-
-      def build_generate_key_request(mid, user_id, password, options)
+      def build_generate_key_request(merchant_id, user_id, password, options)
         message = { GenerateKey: {} }
         post    = message[:GenerateKey]
 
-        # post[:deviceID]       = @device_id
-        post[:mid]            = mid
+        post[:mid]            = merchant_id
         post[:userID]         = user_id
         post[:password]       = password
         post[:developerID]    = @developer_id
@@ -271,25 +250,52 @@ module ActiveMerchant #:nodoc:
         message
       end
 
-      def build_capture_request(_money, _authorization, _options)
+      def build_capture_request(money, authorization, options)
+        message = { Capture: {} }
+        post    = message[:Capture]
+
+        add_key_information(post, options)
+
+        add_amount(post, money, options, include_currency: false)
+
+        post[:transactionID] = authorization
+        post[:developerID]   = @developer_id
+
+        message
       end
 
-      def build_void_request(_authorization, _options)
+      def build_verify_request(payment_method, options)
+        requires!(options, :card_data_source)
+
+        message = { CardAuthentication: {} }
+        post    = message[:CardAuthentication]
+
+        add_key_information(post, options)
+
+        post[:cardDataSource] = options[:card_data_source]
+
+        add_creditcard(post, payment_method, options)
+
+        post[:developerID]            = @developer_id
+        post[:laneID]                 = options[:lane_id] if options[:lane_id]
+
+        add_terminal_information(post, options)
+
+        message
       end
 
-      def build_refund_request(__authorization, _options)
-      end
+      def build_void_request(money, authorization, options)
+        message = { Void: {} }
+        post    = message[:Void]
 
-      def authorization_from(success, response)
-        return response["error"]["charge"] unless success
+        add_key_information(post, options)
 
-        if url == "customers"
-          [response["id"], response["sources"]["data"].first["id"]].join("|")
-        elsif method == :post && url.match(/customers\/.*\/cards/)
-          [response["customer"], response["id"]].join("|")
-        else
-          response["id"]
-        end
+        add_amount(post, money, options, include_currency: false)
+
+        post[:transactionID] = authorization
+        post[:developerID]   = @developer_id
+
+        message
       end
 
       def emv_payment?(payment)
@@ -324,7 +330,7 @@ module ActiveMerchant #:nodoc:
         success = !response.key?('error') && response['status'] == STATUS_PASS
 
         Response.new(success,
-                     response['responseMessage'],
+                     "#{response['responseCode']} #{response['responseMessage']}",
                      response,
                      test:              test?,
                      authorization:     success ? response['transactionID'] : '',
